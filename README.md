@@ -32,6 +32,7 @@ consensus --topic "Should we use PostgreSQL or SQLite?" \
 |----------|--------|
 | Linux / WSL | `bash install.sh` |
 | Termux (Android) | `bash install.sh` (no sudo) |
+| Alpine Linux | `bash install.sh` (requires `sudo apk`) |
 | pip | `pip install .` |
 
 ```bash
@@ -57,8 +58,8 @@ result = engine.run(topic="Database selection", proposals=proposals)
 
 print(result.consensus_reached)    # True
 print(result.winning_proposal)     # "Use PostgreSQL"
-print(result.confidence)           # 0.88
-print(result.minority_report)      # Proposal from agent-b
+print(result.confidence)           # 1.0  (all proposals merged to winner by round 2)
+print(result.minority_report)      # None (no dissenters remain after Delphi merge)
 print(result.rounds_taken)         # 2
 ```
 
@@ -85,7 +86,18 @@ consensus-engine/
 
 ## Cross-Platform Notes
 
-Works on Linux, WSL, and Termux with no platform-specific dependencies.
+Works on Linux (Debian/Ubuntu/Arch/Fedora/Alpine), WSL2, and Termux with no
+platform-specific dependencies. All data is stored under `~/.local/share/` (XDG
+compliant) — no `/sys/firmware/efi` or system-path assumptions.
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| Debian 12/13, Ubuntu 22.04/24.04 | ✅ Tier 1 | `apt-get` path |
+| Arch / Manjaro | ✅ Tier 2 | `pacman` path |
+| Fedora / RHEL / Rocky | ✅ Tier 2 | `dnf` path |
+| Alpine | ✅ Best-effort | `apk add python3 py3-pip git` |
+| WSL2 (Ubuntu base) | ✅ Tier 1 | no EFI path assumptions |
+| Termux (Android arm64) | ✅ Best-effort | no sudo; `pkg install python git` |
 
 ## License
 
