@@ -23,6 +23,15 @@ import logging
 
 logger = logging.getLogger("consensus_engine")
 
+
+def _version() -> str:
+    """Return the installed package version, falling back to '1.0.0'."""
+    try:
+        from importlib.metadata import version
+        return version("consensus-engine")
+    except Exception:
+        return "1.0.0"
+
 # ── Public data types ─────────────────────────────────────────────────────────
 
 @dataclass
@@ -84,6 +93,10 @@ class ConsensusEngine:
 
         best_key: Optional[str] = None
         best_confidence = 0.0
+        # Track the groups snapshot that corresponds to best_key so that a
+        # subsequent _merge_similar call (which may rename keys) cannot cause
+        # a KeyError when we later look up groups[best_key].
+        best_groups = groups
         rounds = 0
 
         for round_num in range(1, self.max_rounds + 1):
@@ -92,8 +105,9 @@ class ConsensusEngine:
             if confidence >= self.min_threshold:
                 best_key = winner_key
                 best_confidence = confidence
+                best_groups = groups
                 break
-            best_key, best_confidence = winner_key, confidence
+            best_key, best_confidence, best_groups = winner_key, confidence, groups
             groups = self._merge_similar(groups)
 
         consensus_reached = best_confidence >= self.min_threshold
@@ -101,7 +115,7 @@ class ConsensusEngine:
         minority: Optional[Proposal] = None
 
         if best_key is not None:
-            winning_proposal = groups[best_key][0].content
+            winning_proposal = best_groups[best_key][0].content
             if not consensus_reached:
                 # Use original proposals list so merge-similar grouping doesn't
                 # hide the minority (post-merge groups may have collapsed all
@@ -139,18 +153,29 @@ class ConsensusEngine:
     def _merge_similar(
         self, groups: Dict[str, List[Proposal]], sim_threshold: float = 0.55
     ) -> Dict[str, List[Proposal]]:
-        """Delphi step: merge groups whose representative content is similar."""
+        """Delphi step: merge groups whose representative content is similar.
+
+        Direct mappings are built first (keys[j] → keys[i] for i < j), then
+        transitive chains are resolved so that A→B→C collapses to A→C,
+        preventing orphaned intermediate groups in the output.
+        """
         keys = list(groups.keys())
         merged: Dict[str, str] = {}
         for i in range(len(keys)):
             for j in range(i + 1, len(keys)):
                 ratio = SequenceMatcher(None, keys[i], keys[j]).ratio()
-                if ratio >= sim_threshold:
-                    if keys[j] not in merged:
-                        merged[keys[j]] = keys[i]
+                if ratio >= sim_threshold and keys[j] not in merged:
+                    merged[keys[j]] = keys[i]
+
+        def _follow(k: str) -> str:
+            """Follow the merge chain to the canonical root key."""
+            while k in merged:
+                k = merged[k]
+            return k
+
         new_groups: Dict[str, List[Proposal]] = {}
         for k, proposals in groups.items():
-            target = merged.get(k, k)
+            target = _follow(k)
             new_groups.setdefault(target, []).extend(proposals)
         return new_groups
 
@@ -255,3 +280,109 @@ class ConsensusPersistence:
         if self._conn:
             self._conn.close()
             self._conn = None
+
+
+# ── CLI entry point ───────────────────────────────────────────────────────────
+
+def main() -> None:
+    """Command-line entry point for consensus-engine.
+
+    Reads agent proposal files (YAML) and runs a Delphi-style consensus round.
+
+    Each YAML file must contain at minimum:
+        agent:   <agent-name>
+        content: <proposal text>
+        score:   <float 0.0–1.0>   # optional, default 0.5
+    """
+    import argparse
+    import sys
+
+    import yaml  # already in project dependencies
+
+    parser = argparse.ArgumentParser(
+        prog="consensus",
+        description="Delphi-style multi-agent consensus engine.",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"consensus-engine {_version()}"
+    )
+    parser.add_argument("--topic", help="Deliberation topic")
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=float(os.environ.get("CONSENSUS_MIN_THRESHOLD", "0.66")),
+        metavar="FLOAT",
+        help="Minimum endorsement threshold 0–1 (default: 0.66)",
+    )
+    parser.add_argument(
+        "--rounds",
+        type=int,
+        default=int(os.environ.get("CONSENSUS_MAX_ROUNDS", "3")),
+        metavar="N",
+        help="Maximum deliberation rounds (default: 3)",
+    )
+    parser.add_argument(
+        "--agents",
+        nargs="+",
+        metavar="YAML",
+        help="One or more agent YAML proposal files",
+    )
+
+    args = parser.parse_args()
+
+    if not args.topic:
+        parser.print_help()
+        sys.exit(0)
+
+    if not args.agents:
+        parser.error("--agents is required when --topic is specified")
+
+    proposals: List[Proposal] = []
+    for path in args.agents:
+        try:
+            with open(path) as fh:
+                data = yaml.safe_load(fh) or {}
+        except OSError as exc:
+            print(f"[ERR] Cannot read {path}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        proposals.append(
+            Proposal(
+                agent=str(data.get("agent", os.path.basename(path))),
+                content=str(data.get("content", "")),
+                score=float(data.get("score", 0.5)),
+            )
+        )
+
+    try:
+        engine = ConsensusEngine(min_threshold=args.threshold, max_rounds=args.rounds)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    result = engine.run(topic=args.topic, proposals=proposals)
+
+    try:
+        from rich.console import Console
+
+        console = Console()
+        console.print(f"[bold]Topic    :[/bold] {args.topic}")
+        console.print(
+            f"[bold]Consensus:[/bold] {'[green]✓ yes[/green]' if result.consensus_reached else '[yellow]✗ no[/yellow]'}"
+        )
+        if result.winning_proposal:
+            console.print(f"[bold]Winner   :[/bold] {result.winning_proposal}")
+        console.print(f"[bold]Confidence:[/bold] {result.confidence:.0%}")
+        console.print(f"[bold]Rounds   :[/bold] {result.rounds_taken}")
+        if result.minority_report:
+            mr = result.minority_report
+            console.print(f"[bold]Minority :[/bold] {mr.agent} — {mr.content}")
+    except ImportError:
+        print(f"Topic    : {args.topic}")
+        print(f"Consensus: {'yes' if result.consensus_reached else 'no'}")
+        if result.winning_proposal:
+            print(f"Winner   : {result.winning_proposal}")
+        print(f"Confidence: {result.confidence:.0%}")
+        print(f"Rounds   : {result.rounds_taken}")
+        if result.minority_report:
+            mr = result.minority_report
+            print(f"Minority : {mr.agent} — {mr.content}")
+
