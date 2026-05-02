@@ -103,9 +103,11 @@ class ConsensusEngine:
         if best_key is not None:
             winning_proposal = groups[best_key][0].content
             if not consensus_reached:
-                # Pick the highest-scoring dissenting proposal
+                # Use original proposals list so merge-similar grouping doesn't
+                # hide the minority (post-merge groups may have collapsed all
+                # dissenting proposals into the winning group's key).
                 dissenters = [
-                    p for k, grp in groups.items() if k != best_key for p in grp
+                    p for p in proposals if self._normalize(p.content) != best_key
                 ]
                 if dissenters:
                     minority = max(dissenters, key=lambda p: p.score)
