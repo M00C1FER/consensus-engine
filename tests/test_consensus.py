@@ -105,6 +105,7 @@ def test_single_proposal_always_reaches_consensus():
     assert result.consensus_reached
     assert result.winning_proposal == "Only option"
     assert result.confidence == pytest.approx(1.0)
+    assert result.rounds_taken == 1
 
 
 def test_invalid_threshold_raises():

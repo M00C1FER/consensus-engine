@@ -23,6 +23,15 @@ import logging
 
 logger = logging.getLogger("consensus_engine")
 
+
+def _version() -> str:
+    """Return the installed package version, falling back to '1.0.0'."""
+    try:
+        from importlib.metadata import version
+        return version("consensus-engine")
+    except Exception:
+        return "1.0.0"
+
 # ── Public data types ─────────────────────────────────────────────────────────
 
 @dataclass
@@ -295,7 +304,7 @@ def main() -> None:
         description="Delphi-style multi-agent consensus engine.",
     )
     parser.add_argument(
-        "--version", action="version", version="consensus-engine 1.0.0"
+        "--version", action="version", version=f"consensus-engine {_version()}"
     )
     parser.add_argument("--topic", help="Deliberation topic")
     parser.add_argument(
@@ -338,7 +347,7 @@ def main() -> None:
             sys.exit(1)
         proposals.append(
             Proposal(
-                agent=str(data.get("agent", path)),
+                agent=str(data.get("agent", os.path.basename(path))),
                 content=str(data.get("content", "")),
                 score=float(data.get("score", 0.5)),
             )
