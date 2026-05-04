@@ -342,14 +342,18 @@ def main() -> None:
         try:
             with open(path) as fh:
                 data = yaml.safe_load(fh) or {}
-        except OSError as exc:
+        except (OSError, yaml.YAMLError) as exc:
             print(f"[ERR] Cannot read {path}: {exc}", file=sys.stderr)
             sys.exit(1)
+        try:
+            score = float(data.get("score", 0.5))
+        except (ValueError, TypeError):
+            score = 0.5
         proposals.append(
             Proposal(
                 agent=str(data.get("agent", os.path.basename(path))),
                 content=str(data.get("content", "")),
-                score=float(data.get("score", 0.5)),
+                score=score,
             )
         )
 
@@ -385,4 +389,3 @@ def main() -> None:
         if result.minority_report:
             mr = result.minority_report
             print(f"Minority : {mr.agent} — {mr.content}")
-
